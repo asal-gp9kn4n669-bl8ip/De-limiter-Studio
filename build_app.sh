@@ -3,7 +3,7 @@
 #
 # - Fast incremental build (default when Contents/Resources/python already exists):
 #     ./build_app.sh
-#   Recompiles DelimiterApp.swift, syncs audio_tool.py + De-limiter/, and prunes unused runtime bloat.
+#   Recompiles DelimiterApp.swift, syncs delimiter_tool.py + De-limiter/, and prunes unused runtime bloat.
 #
 # - Full runtime rebuild (bundles a fresh standalone Python 3.11 + packages from requirements-app.txt):
 #     ./build_app.sh --full
@@ -53,9 +53,9 @@ cat > "$CONTENTS_DIR/Info.plist" <<'EOF'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>1.1.0</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>2</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
@@ -164,7 +164,8 @@ if [[ -d "$SCRIPT_DIR/De-limiter" ]]; then
         "$SCRIPT_DIR/De-limiter/" "$RESOURCES_DIR/De-limiter/"
 fi
 
-cp "$SCRIPT_DIR/audio_tool.py" "$RESOURCES_DIR/audio_tool.py"
+rm -f "$RESOURCES_DIR/audio_tool.py"
+cp "$SCRIPT_DIR/delimiter_tool.py" "$RESOURCES_DIR/delimiter_tool.py"
 
 find "$RESOURCES_DIR" -type d -name __pycache__ -prune -exec rm -rf {} +
 "$PY" -I -m compileall -q -j 0 --invalidation-mode unchecked-hash \
@@ -189,7 +190,7 @@ echo "Successfully built self-contained app: $APP_DIR"
 du -sh "$APP_DIR"
 
 if [[ "$MAKE_ZIP" -eq 1 ]]; then
-    ZIP_PATH="$SCRIPT_DIR/De-limiter-Studio-v1.0.0-macOS-arm64.zip"
+    ZIP_PATH="$SCRIPT_DIR/De-limiter-Studio-v1.1.0-macOS-arm64.zip"
     echo "==> Creating release archive: $ZIP_PATH..."
     rm -f "$ZIP_PATH"
     ditto -c -k --keepParent "$APP_DIR" "$ZIP_PATH"

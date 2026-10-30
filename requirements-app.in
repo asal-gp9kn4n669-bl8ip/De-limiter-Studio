@@ -1,4 +1,4 @@
-# Minimal runtime packages for the self-contained De-limiter.app (inference + audio_tool.py only).
+# Cross-platform runtime dependencies for De-limiter Studio (CLI on Linux/Windows/macOS + De-limiter.app).
 torch
 numpy
 scipy

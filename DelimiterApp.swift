@@ -6,11 +6,13 @@ import UniformTypeIdentifiers
 
 // MARK: - Domain Models & Enums
 
-/// WAV and FLAC are lossless 24-bit PCM at 44.1 kHz; AAC (.m4a) uses macOS afconvert constrained VBR.
+/// WAV and FLAC are lossless 24-bit PCM at 44.1 kHz; AAC (.m4a) uses macOS afconvert constrained VBR;
+/// Opus (.opus) uses libopus VBR at 48 kHz (resampled via SoXR VHQ).
 enum OutputFormat: String, CaseIterable, Identifiable {
     case wav = "WAV"
     case flac = "FLAC"
     case aac = "AAC"
+    case opus = "Opus"
 
     var id: String { rawValue }
 
@@ -19,6 +21,7 @@ enum OutputFormat: String, CaseIterable, Identifiable {
         case .wav: return "wav"
         case .flac: return "flac"
         case .aac: return "m4a"
+        case .opus: return "opus"
         }
     }
 }
@@ -138,7 +141,7 @@ struct LogLine: Identifiable {
     let text: String
 }
 
-/// Loudness and waveform envelope of one file as reported by audio_tool.py (`null` when not measurable).
+/// Loudness and waveform envelope of one file as reported by delimiter_tool.py (`null` when not measurable).
 private struct AudioMetrics: Decodable {
     var lufs: Double?
     var core_lufs: Double?
@@ -370,6 +373,7 @@ final class DelimiterViewModel {
     // Output Format
     var outputFormat: OutputFormat = .flac
     var aacBitrateKbps: Double = 256.0
+    var opusBitrateKbps: Double = 192.0
     var copyMetadataTags: Bool = true
     var customOutputFolder: URL?
 
@@ -381,7 +385,7 @@ final class DelimiterViewModel {
     // Environment Paths
     let delimiterDir: URL
     let pythonURL: URL
-    /// audio_tool.py decodes, measures and writes audio with the same Python as inference.py (no ffmpeg needed).
+    /// delimiter_tool.py decodes, measures and writes audio with the same Python as inference.py (no ffmpeg needed).
     let audioToolURL: URL?
     let hasInferenceScript: Bool
     let hasPython: Bool
@@ -396,7 +400,7 @@ final class DelimiterViewModel {
     @ObservationIgnored private var nextLogID = 0
     private static let maxLogLines = 5_000
 
-    /// - Parameter resourcesURL: where the app keeps `audio_tool.py` and, in a self-contained build
+    /// - Parameter resourcesURL: where the app keeps `delimiter_tool.py` and, in a self-contained build
     ///   (package_app.sh), the `De-limiter` and `python` folders. Defaults to the app bundle's Resources.
     init(resourcesURL: URL? = Bundle.main.resourceURL) {
         let fm = FileManager.default
@@ -440,9 +444,9 @@ final class DelimiterViewModel {
             self.hasPython = false
         }
 
-        // audio_tool.py: inside the app (build_app.sh copies it there), else next to the app or in the working dir
+        // delimiter_tool.py: inside the app (build_app.sh copies it there), else next to the app or in the working dir
         let toolCandidates = [resourcesURL, bundleParent, URL(fileURLWithPath: fm.currentDirectoryPath)]
-            .compactMap { $0?.appendingPathComponent("audio_tool.py") }
+            .compactMap { $0?.appendingPathComponent("delimiter_tool.py") }
         self.audioToolURL = toolCandidates.first { fm.fileExists(atPath: $0.path) }
 
         let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first ?? fm.temporaryDirectory
@@ -468,7 +472,7 @@ final class DelimiterViewModel {
         if let audioToolURL {
             appendLog("Audio tool: \(audioToolURL.path)")
         } else {
-            appendLog("WARNING: audio_tool.py not found. Keep it next to the app (build_app.sh copies it inside).")
+            appendLog("WARNING: delimiter_tool.py not found. Keep it next to the app (build_app.sh copies it inside).")
         }
 
         // Don't leave inference running or preview WAVs behind when the app quits
@@ -771,11 +775,11 @@ final class DelimiterViewModel {
         }
 
         guard audioToolURL != nil else {
-            appendLog("ERROR: audio_tool.py not found; it should be next to the app or inside it.")
+            appendLog("ERROR: delimiter_tool.py not found; it should be next to the app or inside it.")
             for i in tracks.indices {
-                tracks[i].status = .failed("audio_tool.py not found")
+                tracks[i].status = .failed("delimiter_tool.py not found")
             }
-            finishRun("audio_tool.py not found")
+            finishRun("delimiter_tool.py not found")
             return
         }
 
@@ -1028,10 +1032,11 @@ final class DelimiterViewModel {
     /// Renders a raw inference.py WAV as the chosen format with `gainDB` applied, optionally
     /// copying basic tags from `tagsFrom`. Returns the loudness of the audio as written, or nil on failure.
     private func writeOutput(source: URL, gainDB: Double, tagsFrom: URL?, destination: URL) async -> AudioMetrics? {
+        let bitrateKbps = outputFormat == .opus ? opusBitrateKbps : aacBitrateKbps
         var args = [
             "write", source.path, destination.path,
             "--format", outputFormat.fileExtension,
-            "--bitrate", String(Int(aacBitrateKbps.rounded())),
+            "--bitrate", String(Int(bitrateKbps.rounded())),
             String(format: "--gain=%.4f", gainDB)   // "=" form, so a negative gain isn't read as an option
         ]
         if let tagsFrom {
@@ -1055,7 +1060,7 @@ final class DelimiterViewModel {
         return results?.first ?? AudioMetrics()
     }
 
-    /// Runs one audio_tool.py command with the same Python as inference.py and decodes the JSON on its
+    /// Runs one delimiter_tool.py command with the same Python as inference.py and decodes the JSON on its
     /// final `RESULT <json>` line. Returns nil (after logging the tool's output) if the command failed.
     private func runAudioTool<Value: Decodable>(_ arguments: [String]) async -> Value? {
         guard let audioToolURL else { return nil }
@@ -1067,7 +1072,7 @@ final class DelimiterViewModel {
         }
         if !isCancelled {
             let details = res.output.trimmingCharacters(in: .whitespacesAndNewlines)
-            appendLog("ERROR (audio_tool.py \(arguments.first ?? "")): "
+            appendLog("ERROR (delimiter_tool.py \(arguments.first ?? "")): "
                       + (details.isEmpty ? "exit code \(res.exitCode)" : details))
         }
         return nil
@@ -1320,7 +1325,7 @@ struct SidebarControlsView: View {
                     .padding(8)
                 }
 
-                // 3. Output Format (WAV, FLAC, AAC via afconvert)
+                // 3. Output Format (WAV, FLAC, AAC, Opus)
                 GroupBox(label: Label("Output Format", systemImage: "opticaldisc")) {
                     VStack(alignment: .leading, spacing: 10) {
                         Picker("Format:", selection: $vm.outputFormat) {
@@ -1344,6 +1349,20 @@ struct SidebarControlsView: View {
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
                             }
+                        } else if vm.outputFormat == .opus {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text("Bitrate (VBR):")
+                                    Spacer()
+                                    Text("\(Int(vm.opusBitrateKbps.rounded())) kbps")
+                                        .font(.system(.caption, design: .monospaced))
+                                        .bold()
+                                }
+                                Slider(value: $vm.opusBitrateKbps, in: 64...320, step: 16)
+                                Text("Opus VBR at 48 kHz via SoXR VHQ + libopus (.opus)")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
                         } else {
                             Text("Lossless 24-bit, 44.1 kHz (the model's native rate)")
                                 .font(.caption2)
@@ -1351,7 +1370,7 @@ struct SidebarControlsView: View {
                         }
 
                         Toggle("Copy Metadata Tags (Title, Artist, Album…)", isOn: $vm.copyMetadataTags)
-                            .help("Copies basic tags into WAV (RIFF INFO), FLAC (Vorbis), or M4A (iTunes atoms)")
+                            .help("Copies basic tags into WAV (RIFF INFO), FLAC (Vorbis), M4A (iTunes atoms), or Opus (OpusTags)")
 
                         Divider()
 
